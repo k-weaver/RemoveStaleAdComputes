@@ -1,7 +1,7 @@
 param (
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [int]$daysBeforeDelete = 60,
-    [Parameter(Mandatory=$true)]
+    [Parameter(Mandatory=$false)]
     [int]$daysBeforeDisable = 45,
     [Parameter(Mandatory=$false)]
     [switch]$enableLogging,
@@ -26,11 +26,15 @@ if ($enableLogging) {
     $deleteSource = "Delete-ComputerObject"
     $disableObjectsEventId = 501
     $deleteObjectsEventId = 502
-    $disabledLogData = @()
-    $deletedLogData = @()
+    [System.Collections.ArrayList]$disabledLogData = @()
+    [System.Collections.ArrayList]$deletedLogData = @()
 
     try {
         New-EventLog -Source $disableSource -LogName "Application" -ErrorAction Stop
+    }
+    # This catch is in place to prevent errors if the source already exists
+    catch [System.InvalidOperationException] {}
+    try {
         New-EventLog -Source $deleteSource -LogName "Application" -ErrorAction Stop
     }
     # This catch is in place to prevent errors if the source already exists
@@ -40,27 +44,43 @@ if ($enableLogging) {
 $currentDate = Get-Date
 $disableDate = $currentDate.AddDays(-($daysBeforeDisable))
 $deleteDate = $currentDate.AddDays(-($daysBeforeDelete))
-$computerList = Get-ADComputer -Filter ('name -like "*"') -SearchBase $searchBaseDn -SearchScope Subtree
+$computerList = Get-ADComputer -Filter ('name -like "*"') -SearchBase $searchBaseDn -SearchScope Subtree -Properties LastLogonDate
 
 foreach ($computer in $computerList) {
     if ($computer.LastLogonDate -le $disableDate -and $computer.Enabled -eq "True") {
-        $computer | Set-ADComputer -Enabled $false
+        $computer | Set-ADComputer -Enabled $false -WhatIf
         if ($enableLogging) {
-            $disabledLogData = $disabledLogData + "$($computer.name) - $($computer.LastLogonDate) - Disabled Object"
+            $disableValue = $null
+            $disableValue = [pscustomobject]@{'objectName'=$computer.name;'timeStamp'=$computer.LastLogonDate;'action'="disabled"}
+            $disabledLogData.Add($disableValue) | Out-Null
         }
     }
-    if ($computer.LastLogonDate -le $deleteDate -and $computer.Enabled -eq "False") {
-        $computer | Remove-ADComputer -Confirm:$false
+    if ($computer.LastLogonDate -le $deleteDate -and $computer.Enabled -eq $false) {
+        $computer | Remove-ADComputer -Confirm:$false -WhatIf 
         if ($enableLogging) {
-            $deletedLogData = $deletedLogData + "$($computer.name) - $($computer.LastLogonDate) - Deleted Object"
+            $deletedValue = $null
+            $deletedValue = [pscustomobject]@{'objectName'=$computer.name;'timeStamp'=$computer.LastLogonDate;'action'="deleted"}
+            $deletedLogData.Add($deletedValue) | Out-Null
         }
     }
 }
 
 if ($enableLogging) {
+    if ($disabledLogData.Count -eq 0) {
+        $disabledMessage = "No objects to disable"
+    }
+    else {
+        $disabledMessage = $disabledLogData | Out-String
+    }
+    if ($deletedLogData.Count -eq 0) {
+        $deletedMessage = "No objects to delete"
+    }
+    else {
+        $deletedMessage = $deletedLogData | Out-String
+    }
     Write-EventLog -LogName Application -Source $disableSource -EntryType Information `
-        -Message $disabledLogData -EventId $disableObjectsEventId
+        -Message "$disabledMessage" -EventId $disableObjectsEventId
 
     Write-EventLog -LogName Application -Source $deleteSource -EntryType Information `
-        -Message $deletedLogData -EventId $deleteObjectsEventId
+        -Message "$deletedMessage" -EventId $deleteObjectsEventId
 }
